@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AAV Contable Pack",
+  "type": "object",
+  "properties": {
+    "period": {
+      "type": "string"
+    },
+    "er": {
+      "type": "object"
+    },
+    "esf": {
+      "type": "object"
+    },
+    "kpi": {
+      "type": "object"
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "period",
+    "er",
+    "esf",
+    "kpi"
+  ]
+}

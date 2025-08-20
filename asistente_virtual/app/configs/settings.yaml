@@ -1,0 +1,23 @@
+llm:
+  provider: ollama
+  base_url: ${OLLAMA_BASE_URL}
+  model: deepseek-r1:8b
+
+router:
+  default_agent: av_administrativo
+
+agents:
+  aaav_cxc:
+    enabled: true
+  aaav_cxp:
+    enabled: true
+  aav_contable:
+    enabled: true
+  av_administrativo:
+    enabled: true
+  av_operaciones:
+    enabled: true
+  av_comercial:
+    enabled: true
+  av_gerente:
+    enabled: true

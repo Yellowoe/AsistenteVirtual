@@ -1,0 +1,24 @@
+[project]
+name = "asistente-virtual"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+  "pandas>=2.2.2",
+  "openpyxl>=3.1.5",
+  "jsonschema>=4.23.0",
+  "python-dateutil>=2.9.0",
+  "pyyaml>=6.0.2",
+  "pydantic>=2.9.0",
+  "requests>=2.31.0"
+]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["data*", "tests*"]
+
+[tool.setuptools.package-data]
+"app" = ["**/*.json", "**/*.yaml", "**/*.yml", "**/*.md"]

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AAAV CxP Output",
+  "type": "object",
+  "properties": {
+    "period": {
+      "type": "string"
+    },
+    "aging": {
+      "type": "object"
+    },
+    "kpi": {
+      "type": "object",
+      "properties": {
+        "DPO": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "required": [
+    "period",
+    "aging",
+    "kpi"
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AAAV CxC Output",
+  "type": "object",
+  "properties": {
+    "period": {
+      "type": "string"
+    },
+    "aging": {
+      "type": "object",
+      "properties": {
+        "0_30": {
+          "type": "number"
+        },
+        "31_60": {
+          "type": "number"
+        },
+        "61_90": {
+          "type": "number"
+        },
+        "90_plus": {
+          "type": "number"
+        }
+      }
+    },
+    "kpi": {
+      "type": "object",
+      "properties": {
+        "DSO": {
+          "type": "number"
+        }
+      }
+    },
+    "incidents": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "period",
+    "aging",
+    "kpi"
+  ]
+}
