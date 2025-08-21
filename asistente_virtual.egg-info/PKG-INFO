@@ -1,6 +1,8 @@
 Metadata-Version: 2.4
 Name: asistente-virtual
 Version: 0.1.0
+Summary: Asistente virtual con agentes de IA
+Author-email: Joxan Portilla Hernandez <joxanportilla@gmail.com>
 Requires-Python: >=3.10
 Requires-Dist: pandas>=2.2.2
 Requires-Dist: openpyxl>=3.1.5
@@ -9,3 +11,6 @@ Requires-Dist: python-dateutil>=2.9.0
 Requires-Dist: pyyaml>=6.0.2
 Requires-Dist: pydantic>=2.9.0
 Requires-Dist: requests>=2.31.0
+Requires-Dist: langchain>=0.2.6
+Requires-Dist: langchain-community>=0.2.6
+Requires-Dist: langgraph>=0.2.2
