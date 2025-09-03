@@ -1,50 +1,83 @@
-from app.agents.intent import route_intent
+# app/graph_lc.py
+from typing import Dict, Any, List
 
-def run_query(question: str, period: str | None = None) -> dict:
-    # 1) Router de intención (nuevo)
-    intent = route_intent(question)
+# Estado global
+from app.state import GlobalState
 
-    # 2) Ejecuta agentes según intención (tu lógica existente)
-    from app.agents.registry import get_agent
-    from app.state import GlobalState
+# =========================
+# IMPORTS (todas a logic.py)
+# =========================
+from app.agents.av_gerente.logic import Agent as GerenteAgent
+from app.agents.aav_contable.logic import Agent as ContableAgent
+from app.agents.aaav_cxc.logic import Agent as CxcAgent
+from app.agents.aaav_cxp.logic import Agent as CxpAgent
 
-    state = GlobalState(period=period or "2025-08")
-    trace = []
+# Administrativo (si lo tienes en app/agents/av_administrativo/logic.py)
+try:
+    from app.agents.av_administrativo.logic import Agent as AdminAgent
+except ModuleNotFoundError:
+    AdminAgent = None  # si no existe, saltamos ese paso
 
-    if intent.cxc:
-        res_cxc = get_agent("aaav_cxc").handle({"payload": {"period": state.period}}, state)
-        trace.append(res_cxc)
-    else:
-        res_cxc = None
 
-    if intent.cxp:
-        res_cxp = get_agent("aaav_cxp").handle({"payload": {"period": state.period}}, state)
-        trace.append(res_cxp)
-    else:
-        res_cxp = None
+def _detect_intent(q: str) -> Dict[str, Any]:
+    t = (q or "").lower()
+    informe = any(
+        kw in t
+        for kw in [
+            "informe financiero",
+            "informe del mes",
+            "reporte mensual",
+            "reporte del mes",
+            "informe de este mes",
+            "resumen financiero",
+        ]
+    )
+    cxc = informe or any(kw in t for kw in ["cxc", "cuentas por cobrar", "cobro", "clientes por cobrar"])
+    cxp = informe or any(kw in t for kw in ["cxp", "cuentas por pagar", "pago", "proveedores"])
+    return {"informe": informe, "cxc": cxc, "cxp": cxp, "reason": "heurística determinista es-ES"}
 
-    res_pack = None
-    if intent.cxc and intent.cxp:
-        res_pack = get_agent("aav_contable").handle({
-            "payload": {
-                "cxc_data": (res_cxc or {}).get("data"),
-                "cxp_data": (res_cxp or {}).get("data"),
-            }
-        }, state)
-        trace.append(res_pack)
 
-    # Si pide informe, delega a gerente (opcional según tu implementación)
-    res_gerente = None
-    if intent.informe:
-        res_gerente = get_agent("av_gerente").handle({
-            "payload": {
-                "question": question,
-                "period": state.period
-            }
-        }, state)
+def run_query(question: str, period: str) -> Dict[str, Any]:
+    # Crear y pasar GlobalState a TODOS los agentes
+    state = GlobalState(period=period)
+
+    intent = _detect_intent(question)
+    trace: List[Dict[str, Any]] = []
+
+    # 1) Subagentes operativos (metrics para aging + KPIs)
+    cxc = cxp = None
+    if intent["cxc"]:
+        cxc = CxcAgent().handle({"payload": {"period": period, "action": "metrics"}}, state=state)
+        trace.append(cxc)
+
+    if intent["cxp"]:
+        cxp = CxpAgent().handle({"payload": {"period": period, "action": "metrics"}}, state=state)
+        trace.append(cxp)
+
+    # 2) Consolidación contable si hay CxC o CxP
+    contable_pack = None
+    if cxc or cxp:
+        contable = ContableAgent().handle({"payload": {"cxc_data": cxc, "cxp_data": cxp}}, state=state)
+        trace.append(contable)
+        contable_pack = contable.get("data")
+
+    # 3) Administrativo (hallazgos/órdenes) si hay pack y el agente existe
+    administrativo = None
+    if contable_pack and AdminAgent is not None:
+        try:
+            administrativo = AdminAgent().handle({"payload": {"contable_pack": contable_pack}}, state=state)
+        except Exception:
+            administrativo = None  # no bloquees el flujo si este paso falla
+
+    # 4) Informe ejecutivo del gerente
+    gerente = GerenteAgent().handle(
+        {"payload": {"question": question, "period": period, "trace": trace}},
+        state=state,
+    )
 
     return {
-        "intent": intent.model_dump(),
+        "intent": intent,
         "trace": trace,
-        "gerente": res_gerente
+        "administrativo": administrativo,
+        "gerente": gerente,
     }

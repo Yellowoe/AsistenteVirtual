@@ -28,3 +28,13 @@ def get_agent(name: str) -> BaseAgent:
         raise KeyError(f"Agente '{name}' no encontrado")
 
     return _REGISTRY[name]
+
+AGENT_INFO = {
+    "aaav_cxc": "Agente auxiliar de cuentas por cobrar",
+    "aaav_cxp": "Agente auxiliar de cuentas por pagar",
+    "aav_contable": "Agente de contabilidad",
+    "av_administrativo": "Agente administrativo",
+    "av_gerente": "Agente gerente (integrador y reportes ejecutivos)",
+}
+def list_agents():
+    return list(AGENT_INFO.keys())
