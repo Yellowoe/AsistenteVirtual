@@ -1,9 +1,28 @@
 # app/lc_llm.py
 import os
-from langchain_ollama import ChatOllama
+from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
+
+# Cargar variables de entorno desde .env
+load_dotenv()
 
 def get_chat_model():
-    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    model    = os.getenv("OLLAMA_MODEL", "deepseek-r1:8b")
-    # Para R1 tenlo frío para que no alucine; sube si necesitas más creatividad
-    return ChatOllama(base_url=base_url, model=model, temperature=0.2)
+    """
+    Devuelve el modelo GPT-4o (completo) para tareas de análisis financiero y causalidad.
+    Configurado con variables de entorno:
+      - OPENAI_API_KEY (obligatorio)
+      - OPENAI_MODEL (por defecto 'gpt-4o')
+      - OPENAI_TEMPERATURE (por defecto 0)
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("Falta la variable OPENAI_API_KEY")
+
+    model = os.getenv("OPENAI_MODEL", "gpt-4o")  # ahora el grande por defecto
+    temperature = float(os.getenv("OPENAI_TEMPERATURE", "0"))
+
+    return ChatOpenAI(
+        model=model,
+        temperature=temperature,
+        api_key=api_key
+    )

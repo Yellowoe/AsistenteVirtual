@@ -1,21 +1,28 @@
 # llm_doctor.py
 import os, json, traceback
 from pathlib import Path
+from dotenv import load_dotenv
 
 def main():
-    # Para que Python vea el paquete 'app'
+    # Cargar .env
+    load_dotenv()
+
+    # Asegurar que Python vea el paquete 'app'
     import sys
     sys.path.insert(0, str(Path.cwd()))
 
     print("📦 CWD:", Path.cwd())
-    print("🔑 OPENAI_API_KEY presente:", bool(os.getenv("OPENAI_API_KEY")))
+    api_key = os.getenv("OPENAI_API_KEY")
+    print("🔑 OPENAI_API_KEY presente:", bool(api_key))
+    if api_key:
+        print("   (inicio):", api_key[:8] + "...")
     print("🔧 OPENAI_MODEL:", os.getenv("OPENAI_MODEL", "(no definido)"))
 
     try:
         from app.lc_llm import get_chat_model
-        from app.tools.prompting import build_system_prompt
+        from langchain_core.messages import SystemMessage, HumanMessage
     except Exception as e:
-        print("❌ No se pudieron importar get_chat_model/build_system_prompt:")
+        print("❌ No se pudieron importar dependencias:")
         traceback.print_exc()
         return 2
 
@@ -29,8 +36,8 @@ def main():
         return 3
 
     msgs = [
-        {"role": "system", "content": build_system_prompt("av_gerente")},
-        {"role": "user", "content": 'Responde SOLO con JSON válido: {"ok": true}'},
+        SystemMessage(content="Eres un asistente de prueba. Responde SOLO en JSON válido."),
+        HumanMessage(content='Responde con {"ok": true}'),
     ]
 
     try:
@@ -38,13 +45,13 @@ def main():
         content = getattr(resp, "content", resp)
         print("\n✅ Respuesta del LLM:")
         print(content if isinstance(content, str) else str(content))
-        # Intento parsear por si cumple
+
         try:
             parsed = json.loads(content)
             print("\n🧪 JSON parseado OK:", parsed)
             return 0
         except Exception:
-            print("\nℹ️ El modelo respondió pero no fue JSON puro (lo cual es aceptable para esta prueba).")
+            print("\nℹ️ El modelo respondió pero no fue JSON puro.")
             return 0
     except Exception:
         print("\n❌ Error invocando al LLM:")

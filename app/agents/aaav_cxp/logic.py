@@ -19,7 +19,7 @@ REQUIRED = [
     "paid_amount",
     "payment_date",
 ]
-DEFAULT_PATH = "data/cxp/invoices.xlsx"
+DEFAULT_PATH = "data/cxp/cxp_invoices.xlsx"
 SCHEMA = "app/schemas/aaav_cxp_schema.json"
 
 # -----------------------------
