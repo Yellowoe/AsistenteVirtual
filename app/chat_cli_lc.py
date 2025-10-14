@@ -1,22 +1,43 @@
+# --- FIX de imports cuando el script vive dentro de app/ ---
+import sys, pathlib
+FILE_PATH = pathlib.Path(__file__).resolve()
+ROOT = FILE_PATH.parent              # .../AsistenteVirtual/app
+PROJECT_ROOT = ROOT.parent           # .../AsistenteVirtual
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+# -----------------------------------------------------------
+
 import json
 import re
 from datetime import datetime
 from pathlib import Path
+import sys, pathlib
 
 import streamlit as st
 
-# Intenta importar tu grafo real
+
+# -----------------------------
+# Asegura que 'app/' sea importable desde la raíz
+# -----------------------------
+ROOT = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+
+# -----------------------------
+# Intenta importar tu grafo real y captura el error
+# -----------------------------
 RUN_QUERY_AVAILABLE = True
+IMPORT_ERROR = None
 try:
-    from app.graph_lc import run_query  # debe devolver un dict
-except Exception:
+    from app.graph_lc import run_query  # debe devolver un dict con firma (question, period)
+except Exception as e:
     RUN_QUERY_AVAILABLE = False
+    IMPORT_ERROR = e
 
 # -----------------------------
 # Config general
 # -----------------------------
 st.set_page_config(
-    page_title="AV Gerente — Mini UI",
+    page_title="Agente Virtual ",
     page_icon="📊",
     layout="wide",
 )
@@ -99,6 +120,8 @@ def _mock_query(question: str, period: str) -> dict:
             {"agent": "aaav_cxc", "dso": 51.4},
             {"agent": "aaav_cxp", "dpo": 31.0},
         ],
+        # añade métricas para derivar estado
+        "metrics": {"dso": None, "dpo": None, "ccc": None, "cash": None},
     }
 
 def _call_backend(question: str, period: str) -> dict:
@@ -126,6 +149,13 @@ def _save_last_result(obj: dict) -> Path:
 st.sidebar.header("⚙️ Configuración")
 backend_status = "✅ Disponible" if RUN_QUERY_AVAILABLE else "❌ No disponible"
 st.sidebar.caption(f"Backend: {backend_status}")
+
+# Si el backend NO está disponible, muestra el trace real del import
+if not RUN_QUERY_AVAILABLE and IMPORT_ERROR is not None:
+    st.sidebar.error("Backend no disponible (falló el import de run_query).")
+    with st.sidebar:
+        st.exception(IMPORT_ERROR)
+
 st.sidebar.toggle(
     "Modo MOCK",
     key="use_mock",
@@ -175,6 +205,17 @@ result = st.session_state.get("last_result")
 if not result:
     st.info("Realiza una consulta para ver resultados.")
 else:
+    # -------------------------
+    # Banner de estado del informe (con/sin datos)
+    # -------------------------
+    metrics = (result or {}).get("metrics") or {}
+    has_core = any([metrics.get("dso"), metrics.get("dpo"), metrics.get("ccc")])
+    if has_core:
+        st.success("✅ Informe generado: análisis con datos suficientes (DSO/DPO/CCC presentes).")
+    else:
+        st.warning("⚠️ Informe generado: sin datos suficientes. "
+                   "Se emitió constancia de falta de información (DSO/DPO/CCC/aging).")
+
     gerente = result.get("gerente") or {}
     admin = result.get("administrativo") or result.get("av_administrativo") or {}
 
@@ -222,7 +263,18 @@ else:
         st.write({"intent": result.get("intent")})
         st.json(result.get("trace") or result, expanded=False)
 
-# -----------------------------
-# Cómo ejecutar (nota visible)
-# -----------------------------
-
+    # -------------------------
+    # Última casilla / conclusión
+    # -------------------------
+    with st.container(border=True):
+        st.subheader("🧾 Conclusión del informe")
+        if has_core:
+            st.markdown(
+                "- El informe **se generó correctamente** y contiene análisis sobre DSO, DPO y CCC.\n"
+                "- Se incluyen hallazgos y órdenes priorizadas cuando aplica."
+            )
+        else:
+            st.markdown(
+                "- El informe **se generó** pero **no cuenta con datos suficientes** para un análisis completo.\n"
+                "- **Acción sugerida:** cargar/validar DSO, DPO, CCC y el *aging* de CxC/CxP para habilitar los diagnósticos."
+            )
