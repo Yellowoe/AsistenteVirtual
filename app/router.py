@@ -1,34 +1,40 @@
-from typing import Dict, Any, List
-from .agents.registry import get_agent, AGENT_INFO
+# app/router.py
+from __future__ import annotations
+from typing import Dict, Any, List, Optional
+from datetime import datetime
+from calendar import monthrange
+from zoneinfo import ZoneInfo
+
 from .state import GlobalState
-from .agents.av_gerente.classifier import classify_intent
-from .lc_llm import get_chat_model
+from .agents.registry import get_agent
+from .dates.period_resolver import resolve_period
+from app.intent.engine import decide_agents  # keywords + LLM + umbrales
 
-# 👇 nuevo
-from .utils.intent_es import detect_intent_es, extract_period_es
+TZ = ZoneInfo("America/Costa_Rica")
 
-FINANCIAL_DEFAULT_CHAIN = ["aaav_cxc", "aaav_cxp", "aav_contable"]  # Gerente siempre al final
-
-def refine_agent_sequence_with_llm(question: str, initial_agents: List[str]) -> List[str]:
-    llm = get_chat_model()
-    agent_list_str = ", ".join(initial_agents)
-    all_agents_str = ", ".join(f"{k}: {v}" for k, v in AGENT_INFO.items())
-    system = (
-        "Eres un asistente experto en orquestar agentes virtuales para responder preguntas empresariales. "
-        "Revisa la lista de agentes sugeridos y agrega los que falten. Devuelve solo nombres separados por coma."
-    )
-    user = (
-        f"Pregunta: {question}\n"
-        f"Agentes sugeridos: {agent_list_str}\n"
-        f"Agentes disponibles: {all_agents_str}\n"
-        "¿Qué agentes deberían participar? Solo los nombres separados por coma."
-    )
-    response = llm.invoke([
-        {"role": "system", "content": system},
-        {"role": "user", "content": user}
-    ])
-    agents = [a.strip() for a in response.content.split(",") if a.strip() in AGENT_INFO]
-    return agents if agents else initial_agents
+# -----------------------------
+# Helpers de período
+# -----------------------------
+def _coerce_sidebar_period(period_str: Optional[str]) -> Optional[dict]:
+    """
+    Convierte 'YYYY-MM' (desde la UI) a override con start/end ISO (TZ CR).
+    Si no viene, devuelve None (para que resuelva NLP o default).
+    """
+    if not period_str:
+        return None
+    s = period_str.strip()
+    if len(s) == 7 and s[4] == "-":
+        y, m = map(int, s.split("-"))
+        start = datetime(y, m, 1, 0, 0, 0, tzinfo=TZ)
+        last = monthrange(y, m)[1]
+        end = datetime(y, m, last, 23, 59, 59, tzinfo=TZ)
+        return {
+            "text": s,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "granularity": "month",
+        }
+    return None
 
 def _dedup_preserving_order(names: List[str]) -> List[str]:
     seen, out = set(), []
@@ -37,71 +43,181 @@ def _dedup_preserving_order(names: List[str]) -> List[str]:
             out.append(n); seen.add(n)
     return out
 
+def _derive_metrics_from_trace(trace: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Prioridad:
+      1) aav_contable.data.kpi.{DSO,DPO,CCC}
+      2) mirrors top-level de aaav_cxc/aaav_cxp (dso/dpo/ccc)
+    """
+    dso = dpo = ccc = cash = None
+
+    # 1) Contable (preferido)
+    for r in trace or []:
+        if r.get("agent") == "aav_contable":
+            kpi = ((r.get("data") or {}).get("kpi") or {})
+            if dso is None and isinstance(kpi.get("DSO"), (int, float)):
+                dso = float(kpi["DSO"])
+            if dpo is None and isinstance(kpi.get("DPO"), (int, float)):
+                dpo = float(kpi["DPO"])
+            if ccc is None and isinstance(kpi.get("CCC"), (int, float)):
+                ccc = float(kpi["CCC"])
+
+    # 2) Mirrors de subagentes si faltó algo
+    for r in trace or []:
+        if dso is None and isinstance(r.get("dso"), (int, float)):
+            dso = float(r["dso"])
+        if dpo is None and isinstance(r.get("dpo"), (int, float)):
+            dpo = float(r["dpo"])
+        if ccc is None and isinstance(r.get("ccc"), (int, float)):
+            ccc = float(r["ccc"])
+
+    return {"dso": dso, "dpo": dpo, "ccc": ccc, "cash": cash}
+
+# -----------------------------
+# Router principal (único orquestador)
+# -----------------------------
 class Router:
     def __init__(self, default_agent: str = "av_gerente"):
-        self.default_agent = default_agent
+        self.default_agent = default_agent  # no se usa para activar por defecto
 
     def dispatch(self, task: Dict[str, Any], state: GlobalState) -> Dict[str, Any]:
-        payload = task.get("payload", {})
-        question = payload.get("question", "")
-        period = payload.get("period") or state.period or extract_period_es(question)
+        payload  = task.get("payload", {}) or {}
+        question = payload.get("question", "") or ""
 
-        # 0) Heurística ES + fail-safe
-        es_intent = detect_intent_es(question)
+        # 1) Resolver período híbrido (param > NLP > default)
+        sidebar_period_str = payload.get("period") or getattr(state, "period_raw", None)
+        override = _coerce_sidebar_period(sidebar_period_str)
+        pr = resolve_period(question, override)  # devuelve datetimes (aware) TZ CR
 
-        # 1) Clasificador tradicional
-        agent_sequence: List[str] = classify_intent(question) or []
+        period = {
+            "text": pr["text"],
+            "start": pr["start"].isoformat(),
+            "end":   pr["end"].isoformat(),
+            "granularity": pr["granularity"],
+            "source": pr["source"],
+            "tz": pr["tz"],
+        }
+        state.period = period  # queda disponible para todos los agentes
 
-        # 2) Refinamiento con LLM (opcional)
-        agent_sequence = refine_agent_sequence_with_llm(question, agent_sequence)
+        # 2) Decisión exhaustiva de agentes (keywords + LLM, SIN defaults)
+        intent_pack = decide_agents(question)  # {selected: [...], reasons: {...}}
+        agent_sequence: List[str] = _dedup_preserving_order(intent_pack.get("selected", []))
 
-        # 3) Si es reporte/informe financiero, asegurar cadena mínima CxC→CxP→Contable
-        if es_intent.get("informe"):
-            for a in FINANCIAL_DEFAULT_CHAIN:
-                if a not in agent_sequence:
-                    agent_sequence.append(a)
+        # 🔗 Regla: si hay CxC o CxP, forzar Contable para consolidar KPIs
+        if any(a in agent_sequence for a in ("aaav_cxc", "aaav_cxp")) and "aav_contable" not in agent_sequence:
+            agent_sequence.append("aav_contable")
 
-        # 4) Nunca ejecutar gerente dentro del loop; va al final
-        agent_sequence = [a for a in agent_sequence if a != "av_gerente"]
-        agent_sequence = _dedup_preserving_order(agent_sequence)
-
-        # 5) Trace básico
+        # 3) Trace inicial (por qué se eligieron/no se eligieron)
         if not hasattr(state, "trace"):
             state.trace = []
         state.trace.append({
-            "intent_router_es": es_intent,
-            "agent_sequence_before": classify_intent(question),
-            "agent_sequence_final": agent_sequence,
+            "intent_decision": intent_pack,
             "question": question,
             "period": period
         })
 
-        # 6) Ejecutar subagentes en orden
+        # 4) Si no hay señales suficientes, NO ejecutar y explicar
+        if not agent_sequence:
+            return {
+                "intent": {"informe": False, "cxc": False, "cxp": False, "reason": "no-signals"},
+                "gerente": {"executive_decision_bsc": {
+                    "resumen_ejecutivo": "No se activaron agentes: la pregunta no aportó señales suficientes.",
+                    "hallazgos": [],
+                    "riesgos": [],
+                    "recomendaciones": [
+                        "Especifica si deseas CxC, CxP o consolidado contable.",
+                        "Incluye al menos un KPI o proceso (p. ej., DSO, DPO, CCC, aging).",
+                        "Añade un período (p. ej., 'agosto 2025' o 'esta semana')."
+                    ],
+                    "bsc": {"finanzas": [], "clientes": [], "procesos_internos": [], "aprendizaje_crecimiento": []}
+                }},
+                "administrativo": {"hallazgos": [], "orders": []},
+                "metrics": {"dso": None, "dpo": None, "ccc": None, "cash": None},
+                "trace": state.trace,
+                "_meta": {"period_resolved": period, "router_sequence": []}
+            }
+
+        # 5) Ejecutar subagentes en orden (CxC/CxP primero; Contable después con insumos)
         trace: List[Dict[str, Any]] = []
-        for agent_name in agent_sequence:
+        cxc_blob: Optional[Dict[str, Any]] = None
+        cxp_blob: Optional[Dict[str, Any]] = None
+
+        for agent_name in [a for a in agent_sequence if a != "aav_contable"]:
             agent = get_agent(agent_name)
             try:
-                result = agent.handle({"payload": {"question": question, "period": period}}, state)
+                # IMPORTANTE: pasar period_range (el dict unificado)
+                result = agent.handle({"payload": {"question": question, "period_range": period}}, state)
             except TypeError:
-                # por si tu handle usa firma distinta
-                result = agent.handle({"payload": {"period": period}}, state)
+                result = agent.handle({"payload": {"period_range": period}}, state)
+
+            result = result or {}
             result["agent"] = agent_name
             trace.append(result)
 
-        # 7) Gerente al final, con el contexto ya enriquecido
+            # conservar blobs exitosos para el contable
+            if agent_name == "aaav_cxc" and not result.get("error"):
+                cxc_blob = result
+            if agent_name == "aaav_cxp" and not result.get("error"):
+                cxp_blob = result
+
+        # 6) Ejecutar Contable si corresponde (estaba en la secuencia o hay al menos un blob)
+        run_contable = ("aav_contable" in agent_sequence) or (cxc_blob is not None or cxp_blob is not None)
+        if run_contable:
+            contable = get_agent("aav_contable")
+            cont_payload = {
+                "payload": {
+                    "period_range": period,  # mantiene formato dict/tz
+                    "cxc_data": cxc_blob,    # puede ir None; el agente lo maneja
+                    "cxp_data": cxp_blob,
+                }
+            }
+            cont_res = contable.handle(cont_payload, state) or {}
+            cont_res["agent"] = "aav_contable"
+            trace.append(cont_res)
+
+        # 7) Gerente al final (consolidación ejecutiva)
         gerente = get_agent("av_gerente")
         final_report = gerente.handle({
-            "payload": {
-                "trace": trace,
-                "question": question,
-                "period": period
-            }
-        }, state)
+            "payload": {"trace": trace, "question": question, "period": period}
+        }, state) or {}
 
-        # 8) Meta útil para depurar
-        final_report = final_report or {}
-        final_report.setdefault("_meta", {})
-        final_report["_meta"]["router_sequence"] = agent_sequence + ["av_gerente"]
-        final_report["_meta"]["intent_router_es"] = es_intent
-        final_report["_meta"]["period_resolved"] = period
-        return final_report
+        # 8) Normalización de salida para la UI
+        #    Tomar el pack correcto desde 'executive_decision_bsc' (o usar todo el dict si ya viene plano)
+        exec_pack = final_report.get("executive_decision_bsc")
+        if not isinstance(exec_pack, dict):
+            exec_pack = final_report if isinstance(final_report, dict) else {}
+
+        executive = {
+            "resumen_ejecutivo": exec_pack.get("resumen_ejecutivo", "Consolidado generado."),
+            "hallazgos": exec_pack.get("hallazgos", []),
+            "riesgos": exec_pack.get("riesgos", []),
+            "recomendaciones": exec_pack.get("recomendaciones", []),
+            "bsc": exec_pack.get("bsc", {
+                "finanzas": [], "clientes": [], "procesos_internos": [], "aprendizaje_crecimiento": []
+            }),
+        }
+
+        # Derivar KPIs para las cards (contable primero, luego mirrors CxC/CxP)
+        derived_metrics = _derive_metrics_from_trace(trace)
+
+        ui_result = {
+            "intent": final_report.get("intent") or {
+                "informe": True,
+                "cxc": any(r.get("agent") == "aaav_cxc" and not r.get("error") for r in trace),
+                "cxp": any(r.get("agent") == "aaav_cxp" and not r.get("error") for r in trace),
+                "reason": "router-exhaustive"
+            },
+            "gerente": {"executive_decision_bsc": executive},
+            "administrativo": {
+                "hallazgos": [{"id": f"H{i+1}", "msg": h, "severity": "info"} for i, h in enumerate(executive["hallazgos"])],
+                "orders": exec_pack.get("ordenes_prioritarias", []),
+            },
+            "metrics": derived_metrics,
+            "trace": state.trace + trace
+        }
+
+        # 9) Metadatos útiles
+        ui_result.setdefault("_meta", {})
+        ui_result["_meta"]["router_sequence"] = agent_sequence + ["av_gerente"]
+        ui_result["_meta"]["period_resolved"]  = period
+        return ui_result

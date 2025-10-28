@@ -1,6 +1,10 @@
+# app/agents/aav_contable/logic.py
 from __future__ import annotations
 
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
+from dataclasses import dataclass
+import pandas as pd
+from dateutil import parser as dateparser
 
 from ..base import BaseAgent
 from ...state import GlobalState
@@ -8,6 +12,47 @@ from ...state import GlobalState
 # (Opcional) Si agregas esquemas más adelante
 # from ...tools.schema_validate import validate_with
 # SCHEMA = "app/schemas/aav_contable_schema.json"
+
+
+@dataclass
+class PeriodResolved:
+    text: str
+    start: pd.Timestamp | None
+    end: pd.Timestamp | None
+
+
+def _resolve_period(payload: Dict[str, Any], state: GlobalState) -> PeriodResolved:
+    """
+    Acepta:
+      - payload["period_range"] dict (preferido): {text, start, end, ...}
+      - payload["period"] string 'YYYY-MM' (fallback informativo)
+      - state.period (dict del router)
+    Devuelve texto + timestamps (si disponibles).
+    """
+    pr = payload.get("period_range") or getattr(state, "period", None)
+    if isinstance(pr, dict) and pr.get("start") and pr.get("end"):
+        try:
+            start = pd.Timestamp(dateparser.isoparse(pr["start"]))
+            end   = pd.Timestamp(dateparser.isoparse(pr["end"]))
+        except Exception:
+            start = end = None
+        return PeriodResolved(
+            text=str(pr.get("text") or ""),
+            start=start,
+            end=end,
+        )
+
+    # Fallback: sólo texto si viene 'period' (YYYY-MM) o state.period como string
+    p = payload.get("period") or getattr(state, "period_raw", None)
+    if isinstance(p, str) and p:
+        return PeriodResolved(text=p, start=None, end=None)
+
+    # Último recurso: si state.period es dict sin ISO válidos, toma text
+    if isinstance(getattr(state, "period", None), dict):
+        d = getattr(state, "period")
+        return PeriodResolved(text=str(d.get("text") or ""), start=None, end=None)
+
+    return PeriodResolved(text="", start=None, end=None)
 
 
 class Agent(BaseAgent):
@@ -29,47 +74,77 @@ class Agent(BaseAgent):
     # ==========================
     # Utilidades privadas
     # ==========================
-    def _get_period(self, *candidates: Optional[str]) -> str:
-        for p in candidates:
-            if isinstance(p, str) and p:
-                return p
-        return ""
+    def _safe_float(self, v: Any) -> Optional[float]:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _extract_period_text(self, blob: Dict[str, Any]) -> Optional[str]:
+        # Intenta data.period (string) o period (string)
+        data = blob.get("data") or {}
+        for k in ("period",):
+            if isinstance(data.get(k), str) and data.get(k):
+                return data.get(k)
+        if isinstance(blob.get("period"), str) and blob.get("period"):
+            return blob.get("period")
+        return None
 
     def _extract_kpi(self, blob: Dict[str, Any], key: str) -> Optional[float]:
         """Busca primero espejo top-level (ej. `dso`) y luego en `data.kpi[key]` (ej. `DSO`)."""
         # Mirror top-level
         if key.lower() in blob:
-            try:
-                return float(blob[key.lower()])
-            except (ValueError, TypeError):
-                pass
+            f = self._safe_float(blob[key.lower()])
+            if f is not None:
+                return f
         # Dentro de data.kpi
         data = blob.get("data") or blob
         kpi = (data or {}).get("kpi") or {}
         if key in kpi:
-            try:
-                return float(kpi[key])
-            except (ValueError, TypeError):
-                return None
+            return self._safe_float(kpi[key])
         return None
 
-    def _extract_aging_total(self, blob: Dict[str, Any]) -> Optional[float]:
-        data = blob.get("data") or blob
-        aging = (data or {}).get("aging") or {}
-        # Intenta claves típicas
-        for k in ("total", "outstanding_total", "outstanding", "balance"):
-            if k in aging:
-                try:
-                    return float(aging[k])
-                except (ValueError, TypeError):
-                    pass
-        # Si aging es dict de buckets {"0-30": x, "31-60": y, ...}
+    def _extract_totals(self, blob: Dict[str, Any]) -> Dict[str, Optional[float]]:
+        """
+        Lee totales normalizados si existen:
+          - CxC: total_por_cobrar, por_vencer/current
+          - CxP: total_por_pagar, por_vencer/current
+        Si no existen, intenta sumar aging (aunque aging ahora trae sólo vencido).
+        """
+        data = blob.get("data") or {}
+        out: Dict[str, Optional[float]] = {
+            "total": None,
+            "por_vencer": None,
+            "current": None,
+            "vencido": None,
+        }
+
+        # Preferidos (normalizados)
+        for k in ("total_por_cobrar", "total_por_pagar"):
+            if k in data:
+                out["total"] = self._safe_float(data.get(k))
+                break
+        for k in ("por_vencer", "current"):
+            if k in data:
+                val = self._safe_float(data.get(k))
+                out["por_vencer"] = val
+                out["current"] = val
+                break
+
+        # Vencido = suma buckets de aging (si existen)
+        aging = data.get("aging") or {}
         if isinstance(aging, dict) and aging:
             try:
-                return float(sum(float(v) for v in aging.values() if isinstance(v, (int, float))))
+                vencido = sum(float(aging.get(k) or 0.0) for k in ("0_30", "31_60", "61_90", "90_plus"))
+                out["vencido"] = float(vencido)
             except Exception:
-                return None
-        return None
+                out["vencido"] = None
+
+            # Si no teníamos total pero sí por_vencer y vencido → total = por_vencer + vencido
+            if out["total"] is None and out["por_vencer"] is not None and out["vencido"] is not None:
+                out["total"] = float(out["por_vencer"]) + float(out["vencido"])
+
+        return out
 
     # ==========================
     # Manejo principal
@@ -77,29 +152,30 @@ class Agent(BaseAgent):
     def handle(self, task: Dict[str, Any], state: GlobalState) -> Dict[str, Any]:
         payload = task.get("payload", {}) or {}
 
-        # Permite dos formatos: datos crudos (data) o objetos completos del agente
+        # Inputs: datos crudos (data) o objetos completos de agentes
         cxc_in = payload.get("cxc_data") or payload.get("cxc") or {}
         cxp_in = payload.get("cxp_data") or payload.get("cxp") or {}
         inv_in = payload.get("inv_data") or payload.get("inventories") or {}
 
-        if not cxc_in or not cxp_in:
-            return {"agent": self.name, "error": "Faltan datos CxC/CxP para consolidar"}
+        # Resolver período (dict o string) y sobreescribir con el más específico si llega desde subagentes
+        pr = _resolve_period(payload, state)
+        period_text = pr.text or ""  # UI usa texto; el router ya tiene start/end
 
-        # Periodo (preferimos el de CxC; si no, el de CxP)
-        period = self._get_period(
-            (cxc_in.get("data") or {}).get("period"),
-            (cxp_in.get("data") or {}).get("period"),
-            cxc_in.get("period"),
-            cxp_in.get("period"),
-            state.period,
-        )
+        # Si los subagentes traen period texto, preferimos el de CxC, luego CxP
+        cxc_period_txt = self._extract_period_text(cxc_in) if cxc_in else None
+        cxp_period_txt = self._extract_period_text(cxp_in) if cxp_in else None
+        period_text = cxc_period_txt or cxp_period_txt or period_text
+
+        # Si no hay ninguno de los dos, devolvemos consolidado parcial en lo posible
+        if not cxc_in and not cxp_in:
+            return {"agent": self.name, "error": "Faltan datos de CxC y CxP para consolidar"}
 
         # KPIs CxC / CxP / Inventarios
-        dso = self._extract_kpi(cxc_in, "DSO")
-        dpo = self._extract_kpi(cxp_in, "DPO")
-        dio = self._extract_kpi(inv_in, "DIO")  # opcional (si llega desde aaav_inv)
+        dso = self._extract_kpi(cxc_in, "DSO") if cxc_in else None
+        dpo = self._extract_kpi(cxp_in, "DPO") if cxp_in else None
+        dio = self._extract_kpi(inv_in, "DIO") if inv_in else None
 
-        # CCC: si hay DIO, usa fórmula completa; si no, usa simplificada
+        # CCC: si hay DIO, fórmula completa; si no, simplificada
         ccc = None
         try:
             if dso is not None and dpo is not None and dio is not None:
@@ -109,13 +185,16 @@ class Agent(BaseAgent):
         except Exception:
             ccc = None
 
-        # Saldos totales (si disponibilidad en `aging`)
-        ar_total = self._extract_aging_total(cxc_in)  # cuentas por cobrar
-        ap_total = self._extract_aging_total(cxp_in)  # cuentas por pagar
+        # Saldos totales (si disponibilidad en `data.total_*` o sumando aging + por_vencer)
+        ar_totals = self._extract_totals(cxc_in) if cxc_in else {"total": None, "por_vencer": None, "current": None, "vencido": None}
+        ap_totals = self._extract_totals(cxp_in) if cxp_in else {"total": None, "por_vencer": None, "current": None, "vencido": None}
+
+        ar_total = ar_totals["total"]
+        ap_total = ap_totals["total"]
 
         # Paquete contable consolidado
         pack = {
-            "period": period,
+            "period": period_text,
             "kpi": {
                 "DSO": dso,
                 "DPO": dpo,
@@ -128,30 +207,39 @@ class Agent(BaseAgent):
                 # Net Working Capital aproximado (si hay datos)
                 "NWC_proxy": (ar_total - ap_total) if (ar_total is not None and ap_total is not None) else None,
             },
-            # Espacio para estados financieros (rellenar desde otros agentes/fuentes)
-            "er": {},   # Estado de Resultados
-            "esf": {},  # Estado de Situación Financiera
+            # Estado de Resultados y Balance: placeholders si luego integras más fuentes
+            "er": {},
+            "esf": {},
             "checks": [
                 "Base contable consolidada a partir de CxC/CxP",
-                "KPIs consistentes con mirrors top-level",
+                "KPIs consistentes con mirrors top-level cuando existen",
             ],
         }
 
         # (Opcional) validación de esquema
-        # validate_with(SCHEMA, pack)
+        # try:
+        #     validate_with(SCHEMA, pack)
+        # except Exception:
+        #     pass
+
+        # Resumen
+        parts = []
+        if dso is not None: parts.append(f"DSO={dso:.1f}d")
+        if dpo is not None: parts.append(f"DPO={dpo:.1f}d")
+        if ccc is not None: parts.append(f"CCC={ccc:.1f}d")
+        if not parts: parts.append("sin KPIs")
+        summary = "Pack contable consolidado (" + ", ".join(parts) + ")"
 
         # Salida con mirrors top-level + summary
-        out = {
+        out: Dict[str, Any] = {
             "agent": self.name,
-            "summary": "Pack contable consolidado (CxC/CxP" + ("/Inventarios" if dio is not None else "") + ")",
+            "summary": summary,
             "data": pack,
             # Mirrors para consumo directo por av_gerente
             "dso": dso,
             "dpo": dpo,
             "ccc": ccc,
         }
-
-        # Si recibimos DIO, también lo exponemos como mirror (aunque av_gerente hoy no lo usa directo)
         if dio is not None:
             out["dio"] = dio
 

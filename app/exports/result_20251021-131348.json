@@ -1,0 +1,275 @@
+{
+  "intent": {
+    "informe": true,
+    "cxc": true,
+    "cxp": true,
+    "reason": "router-exhaustive"
+  },
+  "gerente": {
+    "executive_decision_bsc": {
+      "resumen_ejecutivo": "En septiembre 2025, el DSO fue de 23.37 días, el DPO de 24.92 días y el CCC de -1.55 días. No hay facturas vencidas en CxC ni en CxP.",
+      "hallazgos": [
+        "El DSO es de 23.37 días.",
+        "El DPO es de 24.92 días.",
+        "El CCC es de -1.55 días.",
+        "No hay facturas vencidas en CxC mayores a 60 días.",
+        "No hay facturas vencidas en CxP mayores a 30 días."
+      ],
+      "riesgos": [
+        "No se identifican riesgos inmediatos en CxC o CxP debido a la ausencia de facturas vencidas."
+      ],
+      "recomendaciones": [
+        "Mantener el control sobre las cuentas por cobrar y por pagar para evitar vencimientos futuros."
+      ],
+      "bsc": {
+        "finanzas": [
+          "DSO: 23.4d",
+          "DPO: 24.9d",
+          "CCC: -1.6d"
+        ],
+        "clientes": [
+          "Continuar con la gestión eficiente de cuentas por cobrar para mantener el DSO bajo."
+        ],
+        "procesos_internos": [
+          "Revisar procesos de pago a proveedores para mantener el DPO en niveles óptimos."
+        ],
+        "aprendizaje_crecimiento": [
+          "Capacitar al equipo en gestión de cuentas por cobrar y por pagar para mejorar la eficiencia."
+        ]
+      }
+    }
+  },
+  "administrativo": {
+    "hallazgos": [
+      {
+        "id": "H1",
+        "msg": "El DSO es de 23.37 días.",
+        "severity": "info"
+      },
+      {
+        "id": "H2",
+        "msg": "El DPO es de 24.92 días.",
+        "severity": "info"
+      },
+      {
+        "id": "H3",
+        "msg": "El CCC es de -1.55 días.",
+        "severity": "info"
+      },
+      {
+        "id": "H4",
+        "msg": "No hay facturas vencidas en CxC mayores a 60 días.",
+        "severity": "info"
+      },
+      {
+        "id": "H5",
+        "msg": "No hay facturas vencidas en CxP mayores a 30 días.",
+        "severity": "info"
+      }
+    ],
+    "orders": [
+      {
+        "title": "Revisar procesos de pago a proveedores",
+        "owner": "Gerente de Finanzas",
+        "kpi": "DPO",
+        "due": "2025-10-31",
+        "impacto": "Mantener el CCC negativo"
+      },
+      {
+        "title": "Renegociar 3 proveedores clave",
+        "owner": "CxP",
+        "priority": "P2",
+        "kpi": "DPO",
+        "due": "2025-09-30"
+      }
+    ]
+  },
+  "metrics": {
+    "dso": 23.366335538999262,
+    "dpo": 24.91720757716254,
+    "ccc": -1.550872038163277,
+    "cash": null
+  },
+  "trace": [
+    {
+      "intent_decision": {
+        "selected": [
+          "aaav_cxc",
+          "aaav_cxp",
+          "aav_contable"
+        ],
+        "reasons": {
+          "thresholds": {
+            "KW_MIN_SCORE": 1.25,
+            "LLM_MIN_CONF": 0.6
+          },
+          "kw_scores": {
+            "aaav_cxc": 3.63,
+            "aaav_cxp": 3.63,
+            "aav_contable": 0.8,
+            "av_administrativo": 0.0
+          },
+          "kw_hits": [
+            "aaav_cxc",
+            "aaav_cxp"
+          ],
+          "llm_list": [
+            {
+              "agent": "aaav_cxc",
+              "confidence": 0.9,
+              "reason": "Necesario para calcular DSO y el aging de clientes."
+            },
+            {
+              "agent": "aaav_cxp",
+              "confidence": 0.9,
+              "reason": "Necesario para calcular DPO y el aging de proveedores."
+            },
+            {
+              "agent": "aav_contable",
+              "confidence": 0.8,
+              "reason": "Requiere consolidación de datos financieros para calcular CCC."
+            }
+          ],
+          "llm_hits": [
+            {
+              "agent": "aaav_cxc",
+              "confidence": 0.9,
+              "reason": "Necesario para calcular DSO y el aging de clientes."
+            },
+            {
+              "agent": "aaav_cxp",
+              "confidence": 0.9,
+              "reason": "Necesario para calcular DPO y el aging de proveedores."
+            },
+            {
+              "agent": "aav_contable",
+              "confidence": 0.8,
+              "reason": "Requiere consolidación de datos financieros para calcular CCC."
+            }
+          ]
+        }
+      },
+      "question": "Consolida CxC y CxP de septiembre 2025: calcula DSO, DPO y CCC. Muestra además el aging de clientes (>60 días) y de proveedores (>30 días",
+      "period": {
+        "text": "septiembre 2025",
+        "start": "2025-09-01T00:00:00-06:00",
+        "end": "2025-09-30T23:59:59-06:00",
+        "granularity": "month",
+        "source": "nlp",
+        "tz": "America/Costa_Rica"
+      }
+    },
+    {
+      "agent": "aaav_cxc",
+      "summary": "CxC calculado (DB)",
+      "data": {
+        "period": "septiembre 2025",
+        "kpi": {
+          "DSO": 23.366335538999262
+        },
+        "aging": {
+          "0_30": 10000.0,
+          "31_60": 0.0,
+          "61_90": 0.0,
+          "90_plus": 0.0
+        },
+        "total_por_cobrar": 80899.99,
+        "por_vencer": 70899.99,
+        "current": 70899.99
+      },
+      "dso": 23.366335538999262
+    },
+    {
+      "agent": "aaav_cxp",
+      "summary": "CxP ejecutado: aging, metrics",
+      "data": {
+        "period": "septiembre 2025",
+        "kpi": {
+          "DPO": 24.91720757716254
+        },
+        "aging": {
+          "0_30": 0.0,
+          "31_60": 0.0,
+          "61_90": 0.0,
+          "90_plus": 0.0
+        },
+        "total_por_pagar": 65350.0,
+        "por_vencer": 65350.0,
+        "current": 65350.0
+      },
+      "dpo": 24.91720757716254,
+      "result": {
+        "actions": [
+          {
+            "action": "aging_snapshot",
+            "rows": [
+              {
+                "bucket": "0_30",
+                "amount": 0.0
+              },
+              {
+                "bucket": "31_60",
+                "amount": 0.0
+              },
+              {
+                "bucket": "61_90",
+                "amount": 0.0
+              },
+              {
+                "bucket": "90_plus",
+                "amount": 0.0
+              }
+            ]
+          }
+        ],
+        "reasons": [
+          "Se solicita DPO/CxP → calcular métricas base.",
+          "Se solicita aging de proveedores (solo vencido)."
+        ]
+      }
+    },
+    {
+      "agent": "aav_contable",
+      "summary": "Pack contable consolidado (DSO=23.4d, DPO=24.9d, CCC=-1.6d)",
+      "data": {
+        "period": "septiembre 2025",
+        "kpi": {
+          "DSO": 23.366335538999262,
+          "DPO": 24.91720757716254,
+          "DIO": null,
+          "CCC": -1.550872038163277
+        },
+        "balances": {
+          "AR_outstanding": 80899.99,
+          "AP_outstanding": 65350.0,
+          "NWC_proxy": 15549.990000000005
+        },
+        "er": {},
+        "esf": {},
+        "checks": [
+          "Base contable consolidada a partir de CxC/CxP",
+          "KPIs consistentes con mirrors top-level cuando existen"
+        ]
+      },
+      "dso": 23.366335538999262,
+      "dpo": 24.91720757716254,
+      "ccc": -1.550872038163277
+    }
+  ],
+  "_meta": {
+    "router_sequence": [
+      "aaav_cxc",
+      "aaav_cxp",
+      "aav_contable",
+      "av_gerente"
+    ],
+    "period_resolved": {
+      "text": "septiembre 2025",
+      "start": "2025-09-01T00:00:00-06:00",
+      "end": "2025-09-30T23:59:59-06:00",
+      "granularity": "month",
+      "source": "nlp",
+      "tz": "America/Costa_Rica"
+    }
+  }
+}

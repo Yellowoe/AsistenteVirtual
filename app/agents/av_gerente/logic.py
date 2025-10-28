@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from typing import Dict, Any, List, Optional, Tuple
 import re
+import json
 from datetime import datetime
+import pandas as pd
+from dateutil import parser as dateparser
 
 from ..base import BaseAgent
 from ...state import GlobalState
@@ -15,14 +18,9 @@ from ...tools.causality import causal_hypotheses
 
 class Agent(BaseAgent):
     """
-    AV_Gerente — Enfocado en BSC (Kaplan & Norton), causalidad y recomendaciones,
-    estrictamente basadas en datos de subagentes (CxC/CxP/Contable).
-
-    Claves:
-    - Grounding: NUNCA inventa KPI; usa solo context.kpis/balances/aging del trace.
-    - BSC: Finanzas / Clientes / Procesos internos / Aprendizaje & crecimiento.
-    - Causalidad: hipótesis (reglas + LLM) y enlaces causa→efecto con evidencia.
-    - Órdenes: genera acciones priorizadas y RACI mínimo, con due date.
+    AV_Gerente — Enfoque BSC (Kaplan & Norton), causalidad y recomendaciones.
+    - NUNCA inventa KPIs: usa solo lo que llegue en trace (CxC/CxP/Contable).
+    - Genera órdenes con due date consistente con el período resuelto.
     """
 
     name = "av_gerente"
@@ -88,6 +86,52 @@ class Agent(BaseAgent):
         s = re.sub(r"(?is)```(?:json)?(.*?)```", r"\1", s)
         s = re.sub(r"(?is)^(thought|thinking|reasoning|chain\s*of\s*thought).*?(\n\n|$)", "", s)
         return s.strip()
+
+    # -------------------------
+    # Período helpers
+    # -------------------------
+    def _period_text_and_due(self, period_in: Any) -> tuple[str, str]:
+        """
+        Devuelve (period_text, due_yyyy_mm_30)
+        - Si `period_in` es dict del router → usa 'text' si existe;
+          si no, deriva YYYY-MM de 'start'.
+        - Si es str (YYYY-MM) → úsalo directo.
+        """
+        period_text = ""
+        if isinstance(period_in, dict):
+            # preferimos texto “humano” si viene
+            pt = str(period_in.get("text") or "").strip()
+            if pt:
+                period_text = pt
+            else:
+                # Derivar YYYY-MM de start si existe
+                try:
+                    start = dateparser.isoparse(period_in["start"])
+                    period_text = f"{start.year:04d}-{start.month:02d}"
+                except Exception:
+                    period_text = ""
+        elif isinstance(period_in, str):
+            period_text = period_in.strip()
+
+        # Construir due (YYYY-MM-30) tomando YYYY-MM de period_text si está,
+        # si no, derivando de end/start si vienen
+        due = "XXXX-XX-30"
+        def _yyyy_mm_from_any(p: Any) -> Optional[str]:
+            if isinstance(p, str) and len(p) >= 7 and p[4] == "-":
+                return p[:7]
+            if isinstance(p, dict):
+                for key in ("start", "end"):
+                    try:
+                        dt = dateparser.isoparse(p[key])
+                        return f"{dt.year:04d}-{dt.month:02d}"
+                    except Exception:
+                        pass
+            return None
+
+        ym = _yyyy_mm_from_any(period_text) or _yyyy_mm_from_any(period_in)
+        if ym:
+            due = f"{ym}-30"
+        return period_text or (ym or ""), due
 
     # -------------------------
     # Extracción de datos del trace
@@ -178,15 +222,17 @@ class Agent(BaseAgent):
             hyps.append("Proporción relevante de CxP en 31–60 días puede tensar pagos si no se calendariza.")
         return hyps
 
-    def _deterministic_orders(self, ctx: Dict[str, Any], period: str) -> List[Dict[str, Any]]:
+    def _deterministic_orders(self, ctx: Dict[str, Any], period_in: Any) -> List[Dict[str, Any]]:
         k = ctx.get("kpis", {})
         bal = ctx.get("balances", {})
         dso = k.get("DSO"); dpo = k.get("DPO"); ccc = k.get("CCC")
         ar = bal.get("AR_outstanding"); ap = bal.get("AP_outstanding")
         ratio = (ar / ap) if isinstance(ar, (int, float)) and isinstance(ap, (int, float)) and ap > 0 else None
 
+        # due consistente con período dict/string
+        _, due = self._period_text_and_due(period_in)
+
         orders: List[Dict[str, Any]] = []
-        due = f"{period}-30"
         if isinstance(dso, (int, float)) and dso > 45:
             orders.append({"title":"Campaña dunning top-10 clientes","owner":"CxC","priority":"P1","kpi":"DSO","due":due})
         if isinstance(dpo, (int, float)) and dpo < 40:
@@ -201,22 +247,26 @@ class Agent(BaseAgent):
     # LLM JSON parser robusto
     # -------------------------
     def _llm_json(self, llm, system_prompt: str, user_prompt: str) -> Optional[Any]:
-        import json, re
         def _clean(s: str) -> str:
             return self._sanitize_text(s or "")
         def _try_parse_any_json(s: str) -> Optional[Any]:
             s = s.strip()
-            if s.startswith("{") or s.startswith("[" ):
-                try: return json.loads(s)
-                except Exception: pass
+            if s.startswith("{") or s.startswith("["):
+                try:
+                    return json.loads(s)
+                except Exception:
+                    pass
             starts = [m.start() for m in re.finditer(r"[\{\[]", s)]
             ends   = [m.start() for m in re.finditer(r"[\}\]]", s)]
             for i in range(len(starts)):
                 for j in range(len(ends)-1, i-1, -1):
-                    if ends[j] <= starts[i]: continue
+                    if ends[j] <= starts[i]:
+                        continue
                     frag = s[starts[i]:ends[j]+1]
-                    try: return json.loads(frag)
-                    except Exception: continue
+                    try:
+                        return json.loads(frag)
+                    except Exception:
+                        continue
             return None
 
         try:
@@ -344,7 +394,7 @@ class Agent(BaseAgent):
     def handle(self, task: Dict[str, Any], state: GlobalState) -> Dict[str, Any]:
         payload = task.get("payload", {})
         question: str = payload.get("question", "")
-        period: str = payload.get("period", state.period)
+        period_in: Any = payload.get("period", state.period)
         trace: List[Dict[str, Any]] = payload.get("trace", []) or []
 
         # 1) Resumen y métricas top-level
@@ -361,16 +411,12 @@ class Agent(BaseAgent):
             causal_traditional = causal_hypotheses(trace)
 
         # 4) Órdenes deterministas (no dependen del LLM)
-        det_orders = self._deterministic_orders(ctx, period)
+        det_orders = self._deterministic_orders(ctx, period_in)
 
         # 5) LLM — instrucciones estrictas BSC + causalidad (SIN inventar números)
         llm = get_chat_model()
         system_prompt = build_system_prompt(self.name)
 
-       # ------------------------------------------------------------------
-# GUARDRAILS: prohíben inventar, fuerzan BSC de Kaplan & Norton,
-# y fijan la semántica correcta de DPO/CCC/aging.
-# ------------------------------------------------------------------
         guardrails = (
             "REGLAS ESTRICTAS:\n"
             "1) DATOS:\n"
@@ -392,17 +438,11 @@ class Agent(BaseAgent):
             "   • Devuelve ÚNICAMENTE JSON VÁLIDO con la estructura indicada. Sin explicaciones, sin bloques <think>.\n"
         )
 
-        # Contexto que ya preparaste (kpIs, aging y balances)
-        ctx = self._extract_context(trace)
-        resumen, metrics = self._summarize_trace(trace)
-        fuzzy_signals = self._build_fuzzy_signals(metrics)
+        period_text, _ = self._period_text_and_due(period_in)
 
-        # ------------------------------------------------------------------
-        # PROMPT al LLM: BSC + causalidad + órdenes (Kaplan & Norton)
-        # ------------------------------------------------------------------
         user_prompt = (
             f"{guardrails}\n"
-            f"Periodo: {period}\n"
+            f"Periodo: {period_text}\n"
             f"Pregunta: {question}\n\n"
             f"== CONTEXTO ==\n"
             f"KPIs: {ctx.get('kpis')}\n"
@@ -435,12 +475,11 @@ class Agent(BaseAgent):
         # 6) Fallback si el LLM no devuelve JSON válido
         if not isinstance(report_json, dict):
             fallback = self._fallback_report(ctx, fuzzy_signals, causal_traditional, [])
-            # inserta órdenes deterministas
-            fallback["ordenes_prioritarias"] = det_orders
+            fallback["ordenes_prioritarias"] = det_orders  # inserta órdenes deterministas
             return {
                 "executive_decision_bsc": fallback,
                 "question": question,
-                "period": period,
+                "period": period_in,
                 "trace": trace,
                 "metrics": metrics,
                 "fuzzy_signals": fuzzy_signals,
@@ -450,12 +489,14 @@ class Agent(BaseAgent):
             }
 
         # 7) Post-proceso: fuerza BSC.finanzas con KPIs reales + une causalidad + añade órdenes deterministas
-        final_report = self._post_process_report(report_json, ctx, det_orders, causal_traditional, report_json.get("causalidad", {}).get("hipotesis", []))
+        final_report = self._post_process_report(
+            report_json, ctx, det_orders, causal_traditional, report_json.get("causalidad", {}).get("hipotesis", [])
+        )
 
         return {
             "executive_decision_bsc": final_report,
             "question": question,
-            "period": period,
+            "period": period_in,
             "trace": trace,
             "metrics": metrics,
             "fuzzy_signals": fuzzy_signals,
