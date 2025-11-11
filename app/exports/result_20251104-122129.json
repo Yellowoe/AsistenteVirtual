@@ -1,0 +1,171 @@
+{
+  "intent": {
+    "informe": true,
+    "cxc": true,
+    "cxp": false,
+    "reason": "router-exhaustive"
+  },
+  "gerente": {
+    "executive_decision_bsc": {
+      "resumen_ejecutivo": "El aging de CxC al 29/10/2025 muestra que no hay cuentas por cobrar vencidas.",
+      "hallazgos": [
+        "No hay cuentas por cobrar en ningún bucket de vencimiento."
+      ],
+      "riesgos": [
+        "No se identifican riesgos relacionados con CxC vencido."
+      ],
+      "recomendaciones": [
+        "Mantener el monitoreo constante de las cuentas por cobrar para asegurar que se mantengan al día."
+      ],
+      "bsc": {
+        "finanzas": [
+          "DSO: 0.0d",
+          "DPO: N/D",
+          "CCC: N/D"
+        ],
+        "clientes": [
+          "La ausencia de CxC vencido sugiere una buena relación con los clientes en términos de pagos."
+        ],
+        "procesos_internos": [
+          "Los procesos de cobro parecen ser efectivos dado el DSO de 0."
+        ],
+        "aprendizaje_crecimiento": [
+          "Continuar con las prácticas actuales de gestión de cuentas por cobrar."
+        ]
+      }
+    }
+  },
+  "administrativo": {
+    "hallazgos": [
+      {
+        "id": "H1",
+        "msg": "No hay cuentas por cobrar en ningún bucket de vencimiento.",
+        "severity": "info"
+      }
+    ],
+    "orders": [
+      {
+        "title": "Monitorear cuentas por cobrar",
+        "owner": "Gerente de Finanzas",
+        "kpi": "DSO",
+        "due": "30/11/2025",
+        "impacto": "Mantener el DSO en 0"
+      }
+    ]
+  },
+  "metrics": {
+    "dso": 0.0,
+    "dpo": null,
+    "ccc": null,
+    "cash": null
+  },
+  "trace": [
+    {
+      "intent_decision": {
+        "selected": [
+          "aaav_cxc"
+        ],
+        "reasons": {
+          "thresholds": {
+            "KW_MIN_SCORE": 1.25,
+            "LLM_MIN_CONF": 0.6
+          },
+          "kw_scores": {
+            "aaav_cxc": 2.83,
+            "aaav_cxp": 0.63,
+            "aav_contable": 0.0,
+            "av_administrativo": 0.0
+          },
+          "kw_hits": [
+            "aaav_cxc"
+          ],
+          "llm_list": [
+            {
+              "agent": "aaav_cxc",
+              "confidence": 1.0,
+              "reason": "La solicitud es específica para un informe de aging de cuentas por cobrar (CxC) con detalles de vencimiento."
+            }
+          ],
+          "llm_hits": [
+            {
+              "agent": "aaav_cxc",
+              "confidence": 1.0,
+              "reason": "La solicitud es específica para un informe de aging de cuentas por cobrar (CxC) con detalles de vencimiento."
+            }
+          ]
+        }
+      },
+      "question": "Dame el aging CxC al 29/10/2025 con buckets No vencido, 1–30, 31–60, 61–90, 90+.",
+      "period": {
+        "text": "auto: mes actual",
+        "start": "2025-11-01T00:00:00-06:00",
+        "end": "2025-11-30T23:59:59-06:00",
+        "granularity": "month",
+        "source": "default",
+        "tz": "America/Costa_Rica"
+      }
+    },
+    {
+      "agent": "aaav_cxc",
+      "summary": "CxC calculado (DB)",
+      "data": {
+        "period": "auto: mes actual",
+        "kpi": {
+          "DSO": 0.0
+        },
+        "aging": {
+          "0_30": 0.0,
+          "31_60": 0.0,
+          "61_90": 0.0,
+          "90_plus": 0.0
+        },
+        "total_por_cobrar": 0.0,
+        "por_vencer": 0.0,
+        "current": 0.0
+      },
+      "dso": 0.0
+    },
+    {
+      "agent": "aav_contable",
+      "summary": "Pack contable consolidado (DSO=0.0d)",
+      "data": {
+        "period": "auto: mes actual",
+        "kpi": {
+          "DSO": 0.0,
+          "DPO": null,
+          "DIO": null,
+          "CCC": null
+        },
+        "balances": {
+          "AR_outstanding": 0.0,
+          "AP_outstanding": null,
+          "NWC_proxy": null
+        },
+        "er": {},
+        "esf": {},
+        "checks": [
+          "Base contable consolidada a partir de CxC/CxP",
+          "KPIs consistentes con mirrors top-level cuando existen"
+        ]
+      },
+      "dso": 0.0,
+      "dpo": null,
+      "ccc": null
+    }
+  ],
+  "_meta": {
+    "router_sequence": [
+      "aaav_cxc",
+      "aav_contable",
+      "av_gerente"
+    ],
+    "period_resolved": {
+      "text": "auto: mes actual",
+      "start": "2025-11-01T00:00:00-06:00",
+      "end": "2025-11-30T23:59:59-06:00",
+      "granularity": "month",
+      "source": "default",
+      "tz": "America/Costa_Rica"
+    }
+  }
+}

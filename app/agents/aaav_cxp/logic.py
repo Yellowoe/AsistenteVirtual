@@ -1,3 +1,4 @@
+# app/agents/aaav_cxp/logic.py
 from __future__ import annotations
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
@@ -45,8 +46,8 @@ def _resolve_period(payload: Dict[str, Any], state: GlobalState) -> PeriodWindow
         s, e, _ = month_window(p)
         return PeriodWindow(text=p, start=s, end=e)
 
-    # Fallback: mes actual (usa tu TZ si quieres)
-    today = pd.Timestamp.today()
+    # Fallback: mes actual (forzado a America/Costa_Rica)
+    today = pd.Timestamp.today(tz="America/Costa_Rica")
     ym = today.strftime("%Y-%m")
     s, e, _ = month_window(ym)
     return PeriodWindow(text=ym, start=s, end=e)
@@ -254,6 +255,21 @@ def _list_open_db(ref_date: date) -> List[Dict[str, Any]]:
     finally:
         db.close()
 
+def _count_open_db(ref_date: date) -> int:
+    """
+    Conteo de facturas abiertas (saldo > 0) al ref_date.
+    No distingue vencidas vs al día: sólo cuenta abiertas.
+    """
+    db = SessionLocal()
+    try:
+        cnt = 0
+        for f in db.query(FacturaCXP):
+            if _saldo_cxp(f) > 0:
+                cnt += 1
+        return cnt
+    finally:
+        db.close()
+
 # ===================== Agente =====================
 class Agent(BaseAgent):
     name = "aaav_cxp"
@@ -289,6 +305,15 @@ class Agent(BaseAgent):
         except Exception as e:
             return {"agent": self.name, "error": f"Error leyendo CxP DB: {e}"}
 
+        # Derivados útiles para el BSC/Resumen
+        overdue_total = float(
+            (aging_overdue.get("0_30", 0.0) or 0.0)
+            + (aging_overdue.get("31_60", 0.0) or 0.0)
+            + (aging_overdue.get("61_90", 0.0) or 0.0)
+            + (aging_overdue.get("90_plus", 0.0) or 0.0)
+        )
+        open_count = _count_open_db(ref_date)
+
         data_norm = {
             "period": win.text,
             "kpi": {"DPO": kpi_dpo},
@@ -301,6 +326,9 @@ class Agent(BaseAgent):
             "total_por_pagar": float(total_por_pagar),
             "por_vencer": float(por_vencer),
             "current": float(por_vencer),  # alias para UI
+            # nuevos campos derivados
+            "overdue_total": overdue_total,
+            "open_invoices": int(open_count),
         }
 
         # 3) Validación (no bloqueante)

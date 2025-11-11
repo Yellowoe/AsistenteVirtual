@@ -233,8 +233,8 @@ show_trace = st.sidebar.checkbox("Ver trace crudo", value=False)
 # -----------------------------
 # Main
 # -----------------------------
-st.title("AV Gerente — Mini UI (Python)")
-st.caption("Haz preguntas y visualiza el resumen ejecutivo, hallazgos y órdenes.")
+st.title("Agente Virtual")
+st.caption("Haz preguntas y visualiza el resumen ejecutivo, hallazgos y recomendaciones.")
 
 question = st.text_area(
     "Pregunta",

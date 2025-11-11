@@ -1,10 +1,11 @@
 # app/agents/aaav_cxc/logic.py
 from __future__ import annotations
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Tuple
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+import re
 import pandas as pd
 from dateutil import parser as dateparser
 
@@ -47,7 +48,7 @@ def _resolve_period(payload: Dict[str, Any], state: GlobalState) -> PeriodWindow
         s, e, _ = month_window(p)
         return PeriodWindow(text=p, start=s, end=e)
 
-    # Fallback: mes actual (TZ del sistema)
+    # Fallback: mes actual (TZ CR ya aplicada en calc_kpis si corresponde)
     today = pd.Timestamp.today(tz="America/Costa_Rica")
     ym = today.strftime("%Y-%m")
     s, e, _ = month_window(ym)
@@ -60,12 +61,13 @@ def _saldo_cxc(f: FacturaCXC) -> Decimal:
     # saldo = monto - monto_pagado
     return Decimal((f.monto or 0) - (f.monto_pagado or 0))
 
-def _aging_and_totals_db(ref_date: date) -> Tuple[Dict[str, float], float, float]:
+def _aging_and_totals_db(ref_date: date) -> Tuple[Dict[str, float], float, float, int]:
     """
     Devuelve:
       - aging SOLO vencido con llaves normalizadas: 0_30, 31_60, 61_90, 90_plus
       - total_por_cobrar (saldo abierto)
       - por_vencer (no vencido, incluye 'sin fecha')
+      - open_count (número de facturas abiertas > 0)
     """
     db = SessionLocal()
     overdue = {
@@ -76,11 +78,13 @@ def _aging_and_totals_db(ref_date: date) -> Tuple[Dict[str, float], float, float
     }
     current = Decimal("0")     # no vencido (<= 0 días)
     no_due = Decimal("0")      # sin fecha_limite
+    open_count = 0
     try:
         for f in db.query(FacturaCXC):
             saldo = _saldo_cxc(f)
             if saldo <= 0:
                 continue
+            open_count += 1
             # FECHA DE VENCIMIENTO EN TU TABLA: fecha_limite
             if not f.fecha_limite:
                 no_due += saldo
@@ -99,7 +103,7 @@ def _aging_and_totals_db(ref_date: date) -> Tuple[Dict[str, float], float, float
 
         total_por_cobrar = float(current + no_due + sum(overdue.values()))
         por_vencer = float(current + no_due)
-        return ({k: float(v) for k, v in overdue.items()}, total_por_cobrar, por_vencer)
+        return ({k: float(v) for k, v in overdue.items()}, total_por_cobrar, por_vencer, open_count)
     finally:
         db.close()
 
@@ -117,6 +121,7 @@ def _list_top_overdue_db(limit_n: int, ref_date: date) -> List[Dict[str, Any]]:
             if days_over <= 0:
                 continue
             cliente = f.cliente.nombre_legal if getattr(f, "cliente", None) else str(getattr(f, "id_entidad_cliente", ""))
+
             rows.append({
                 "invoice_id": f.numero_factura,
                 "customer": cliente,
@@ -182,6 +187,7 @@ def _list_open_db(ref_date: date) -> List[Dict[str, Any]]:
             elif saldo > 0 and days_over > 0:
                 status = "overdue"
             cliente = f.cliente.nombre_legal if getattr(f, "cliente", None) else str(getattr(f, "id_entidad_cliente", ""))
+
             rows.append({
                 "invoice_id": f.numero_factura,
                 "customer": cliente,
@@ -207,31 +213,54 @@ class Agent(BaseAgent):
         Espera en payload:
           - period_range: {text, start, end, granularity, tz}  (preferido)
           - period: "YYYY-MM"                                   (fallback)
-          - action: {"metrics","top_overdue","customer_balance","list_open"}
-          - params: {n, customer}
+          - action: {"metrics","top_overdue","customer_balance","list_open","list_overdue"}
+          - params: {n, customer, min_days?, max_days?}
         """
         payload = task.get("payload", {}) or {}
         action: str = (payload.get("action") or "metrics").strip()
         params: Dict[str, Any] = payload.get("params", {}) or {}
+        question = (payload.get("question") or "").lower().strip()
+
+        # --- Mini-mapeo NL -> acción (en este archivo, sin tocar router) ---
+        has_overdue_words = any(w in question for w in ["vencidas", "vencido", "atrasadas", "atraso"])
+        wants_list = any(w in question for w in ["lista", "listar", "muéstrame", "muestrame", "mostrar", "detalle", "detall", "todas", "cada"])
+        wants_aging = "aging" in question or "antigüedad" in question or "antiguedad" in question
+
+        if action == "metrics":
+            if has_overdue_words and wants_list:
+                action = "list_overdue"
+            elif wants_aging:
+                action = "metrics"  # aging vendrá en data_norm["aging"]
 
         # 1) Período unificado
         win = _resolve_period(payload, state)
-        ref_date = win.end.date()
 
-        # 2) KPI base DSO (si tu repo lo tiene)
+        # *** FIX: usar 'al DD/MM/YYYY' si viene en win.text ('fecha:YYYY-MM-DD') ***
+        _ref_date = None
+        try:
+            m = re.search(r"fecha:(\d{4}-\d{2}-\d{2})", str(win.text))
+            if m:
+                from datetime import date as _date
+                _ref_date = _date.fromisoformat(m.group(1))
+        except Exception:
+            _ref_date = None
+
+        ref_date = _ref_date or win.end.date()
+
+        # 2) KPI base DSO
         repo = FinanzasRepoDB()
         try:
             kpi_dso = repo.dso(win.start.year, win.start.month)
         except Exception:
             kpi_dso = None
 
-        # 3) Aging SOLO vencido + totales desde BD
+        # 3) Aging SOLO vencido + totales (con open_count)
         try:
-            aging_overdue, total_por_cobrar, por_vencer = _aging_and_totals_db(ref_date)
+            aging_overdue, total_por_cobrar, por_vencer, open_count = _aging_and_totals_db(ref_date)
         except Exception as e:
             return {"agent": self.name, "error": f"Error leyendo CxC DB: {e}"}
 
-        # 4) Paquete normalizado para UI/Contable
+        # 4) Paquete normalizado
         data_norm = {
             "period": win.text,
             "kpi": {"DSO": kpi_dso},
@@ -244,6 +273,7 @@ class Agent(BaseAgent):
             "total_por_cobrar": float(total_por_cobrar),
             "por_vencer": float(por_vencer),
             "current": float(por_vencer),  # alias
+            "open_invoices": int(open_count),
         }
 
         # 5) Validación (no bloqueante)
@@ -256,7 +286,7 @@ class Agent(BaseAgent):
         if action == "metrics":
             return {
                 "agent": self.name,
-                "summary": "CxC calculado (DB)",
+                "summary": f"CxC calculado (DB) — {open_count} facturas abiertas",
                 "data": data_norm,
                 "dso": kpi_dso,
             }
@@ -294,10 +324,56 @@ class Agent(BaseAgent):
                 "result": {"action": action, "table": table},
             }
 
+        if action == "list_overdue":
+            # Reutilizamos list_open y filtramos por vencidas
+            table_all = _list_open_db(ref_date)
+            overdue = [r for r in table_all if r.get("status") == "overdue"]
+
+            p_min = int(params.get("min_days", 1))
+            p_max = params.get("max_days")
+            if p_max is not None:
+                p_max = int(p_max)
+                overdue = [r for r in overdue if p_min <= r.get("days_overdue", 0) <= p_max]
+            else:
+                overdue = [r for r in overdue if r.get("days_overdue", 0) >= p_min]
+
+            overdue.sort(key=lambda r: (r.get("days_overdue", 0), r.get("outstanding", 0.0)), reverse=True)
+
+            # Serializar fecha
+            for r in overdue:
+                d = r.get("due_date")
+                if hasattr(d, "isoformat"):
+                    r["due_date"] = d.isoformat()
+
+            # Agrupado por cliente
+            by_customer_map: Dict[str, Dict[str, Any]] = {}
+            for r in overdue:
+                cust = r.get("customer") or "N/D"
+                if cust not in by_customer_map:
+                    by_customer_map[cust] = {"customer": cust, "invoices": 0, "total_outstanding": 0.0}
+                by_customer_map[cust]["invoices"] += 1
+                by_customer_map[cust]["total_outstanding"] += float(r.get("outstanding", 0.0))
+            by_customer = sorted(by_customer_map.values(), key=lambda x: x["total_outstanding"], reverse=True)
+
+            total_overdue = float(sum(r.get("outstanding", 0.0) for r in overdue))
+            return {
+                "agent": self.name,
+                "summary": "Facturas CxC vencidas (detalle)",
+                "data": data_norm,
+                "dso": kpi_dso,
+                "result": {
+                    "action": action,
+                    "total_overdue": total_overdue,
+                    "count_overdue": len(overdue),
+                    "by_customer": by_customer,
+                    "table": overdue
+                },
+            }
+
         # Acción no reconocida → métrica base
         return {
             "agent": self.name,
-            "summary": "CxC calculado (DB)",
+            "summary": f"CxC calculado (DB) — {open_count} facturas abiertas",
             "data": data_norm,
             "dso": kpi_dso,
         }
