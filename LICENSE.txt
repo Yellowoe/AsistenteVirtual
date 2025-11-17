@@ -1,0 +1,13 @@
+Copyright (c) 2025 Alegre y Bravo Limitada
+
+Todos los derechos reservados.
+
+Este software es propiedad de su autor y está destinado exclusivamente
+para uso interno dentro de la organización autorizada.
+
+Queda estrictamente prohibido copiar, distribuir, modificar o utilizar
+este código total o parcialmente sin el consentimiento expreso y por escrito
+del autor o la empresa responsable.
+
+No se concede ninguna licencia pública o comercial sobre el código fuente,
+ni sobre los recursos derivados del mismo.

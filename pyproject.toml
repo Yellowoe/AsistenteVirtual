@@ -1,9 +1,13 @@
 [project]
 name = "asistente-virtual"
 version = "0.1.0"
-requires-python = ">=3.10"
 description = "Asistente virtual con agentes de IA"
-authors = [{ name = "Joxan Portilla Hernandez", email = "joxanportilla@gmail.com" }]
+readme = "README.md"
+license = { text = "Propietario - Uso interno solamente" }
+requires-python = ">=3.10"
+authors = [
+  { name = "Joxan Portilla Hernandez", email = "joxanportilla@gmail.com" }
+]
 dependencies = [
   "pandas>=2.2.2",
   "openpyxl>=3.1.5",
